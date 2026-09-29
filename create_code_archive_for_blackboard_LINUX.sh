@@ -7,7 +7,8 @@ zip -r source.zip \
 	Cargo.toml \
 	src \
 	shaders \
-	resources/* \
+	resources/*  \
+	report.pdf \
 	-x"resources/helicopter.obj" \
 	-x"resources/lunarsurface.obj" \
 	-x"resources/.gitkeep"

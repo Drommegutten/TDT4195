@@ -52,26 +52,70 @@ fn offset<T>(n: u32) -> *const c_void {
 // ptr::null()
 
 
-// == // Generate your VAO here
-unsafe fn create_vao(vertices: &Vec<f32>, indices: &Vec<u32>) -> u32 {
-    // Implement me!
+unsafe fn create_vao(vertices: &Vec<f32>, indices: &Vec<u32>, rgba: &Vec<f32>) -> u32 {
+    // Creates a Vertex Object Array and binds it
+    let mut vao = 0;
+    gl::GenVertexArrays(1, &mut vao);
+    gl::BindVertexArray(vao);
 
-    // Also, feel free to delete comments :)
+    // Uploads vertex position data to the GPU
+    let mut vbo_pos = 0;
+    gl::GenBuffers(1, &mut vbo_pos);
+    gl::BindBuffer(gl::ARRAY_BUFFER, vbo_pos);
+    gl::BufferData(
+        gl::ARRAY_BUFFER,
+        byte_size_of_array(vertices),
+        pointer_to_array(vertices),
+        gl::STATIC_DRAW,
+    );
 
-    // This should:
-    // * Generate a VAO and bind it
-    // * Generate a VBO and bind it
-    // * Fill it with data
-    // * Configure a VAP for the data and enable it
-    // * Generate a IBO and bind it
-    // * Fill it with data
-    // * Return the ID of the VAO
+    // Describe the layout of the vertex data to OpenGL
+    gl::VertexAttribPointer(
+        0,
+        3,
+        gl::FLOAT,
+        gl::FALSE,
+        3 * size_of::<f32>() as i32,
+        offset::<f32>(0),
+    );
+    gl::EnableVertexAttribArray(0);
 
-    0
+    // Uploads vertex RGBA data to the GPU
+    let mut vbo_col = 1;
+    gl::GenBuffers(1, &mut vbo_col);
+    gl::BindBuffer(gl::ARRAY_BUFFER, vbo_col);
+    gl::BufferData(
+        gl::ARRAY_BUFFER,
+        byte_size_of_array(rgba),
+        pointer_to_array(rgba),
+        gl::STATIC_DRAW,
+    );
+
+    gl::VertexAttribPointer(
+        1,
+        4,
+        gl::FLOAT,
+        gl::FALSE,
+        4 * size_of::<f32>() as i32,
+        offset::<f32>(0),
+    );
+    gl::EnableVertexAttribArray(1);
+
+    // Stored as part of the VAO's state, this tells `glDrawElements` which vertices to connect into triangles, avoiding duplicate vertex data.
+    let mut ibo = 0;
+    gl::GenBuffers(1, &mut ibo);
+    gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ibo);
+    gl::BufferData(
+        gl::ELEMENT_ARRAY_BUFFER,
+        byte_size_of_array(indices),
+        pointer_to_array(indices),
+        gl::STATIC_DRAW,
+    );
+
+    vao
 }
 
-
-fn main() {
+fn main() { 
     // Set up the necessary objects to deal with windows and event handling
     let el = glutin::event_loop::EventLoop::new();
     let wb = glutin::window::WindowBuilder::new()
@@ -117,7 +161,7 @@ fn main() {
         unsafe {
             gl::Enable(gl::DEPTH_TEST);
             gl::DepthFunc(gl::LESS);
-            gl::Enable(gl::CULL_FACE);
+            gl::Disable(gl::CULL_FACE);
             gl::Disable(gl::MULTISAMPLE);
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
@@ -130,33 +174,164 @@ fn main() {
             println!("GLSL\t: {}", util::get_gl_string(gl::SHADING_LANGUAGE_VERSION));
         }
 
-        // == // Set up your VAO around here
+            // Triangle vectors
+        
+        let vertices = vec! [
+            0.6, -0.8, 0.4,
+            0.2, 0.2, 0.4,
+            -0.8, -0.2, 0.4,
 
-        let my_vao = unsafe { 1337 };
+            0.4, 0.8, 0.0,
+            -0.1, -0.2, 0.0,
+            0.8, 0.4, 0.0,     
 
+            -0.8, 0.5, -0.2,
+            -0.4, 0.0, -0.2,
+            0.3, 0.1, -0.2
+        ];/*
 
-        // == // Set up your shaders here
+        let vertices = vec! [
+            0.6, -0.8, 0.0,
+            0.2, 0.0, 0.0,
+            -0.8, -0.2, 0.0,
 
-        // Basic usage of shader helper:
-        // The example code below creates a 'shader' object.
-        // It which contains the field `.program_id` and the method `.activate()`.
-        // The `.` in the path is relative to `Cargo.toml`.
-        // This snippet is not enough to do the exercise, and will need to be modified (outside
-        // of just using the correct path), but it only needs to be called once
+            0.4, 0.5, 0.0,
+            0.1, 0.2, 0.0,
+            0.8, 0.4, 0.0,     
 
-        /*
+            -0.8, 0.5, -0.0,
+            -0.4, 0.0, -0.0,
+            0.3, 0.1, -0.0
+        ];*/
+      
+
+            // Triangle indices
+        let indices = vec! [
+            0, 1, 2,
+            3, 4, 5,
+            6, 7, 8,
+
+        ];
+
+            // Triangle RGBA vectors
+        
+        let rgba: Vec<f32> = vec! [
+            1.0, 0.0, 0.9, 0.7,
+            1.0, 0.0, 0.9, 0.7,
+            1.0, 0.0, 0.9, 0.7,
+
+            0.0, 0.252, 1.0, 0.7,
+            0.0, 0.252, 1.0, 0.7,
+            0.0, 0.252, 1.0, 0.7,
+
+            0.0, 1.0, 0.522, 0.7,
+            0.0, 1.0, 0.522, 0.7,
+            0.0, 1.0, 0.522, 0.7,
+        ]; 
+        /* 
+        let rgba: Vec<f32> = vec! [
+            1.0, 0.0, 0.5, 0.7,
+            0.2, 0.0, 0.9, 0.7,
+            1.0, 0.0, 0.2, 0.7,
+
+            0.7, 0.252, 1.0, 0.7,
+            0.4, 0.252, 0.3, 0.7,
+            0.0, 0.252, 0.7, 0.7,
+
+            0.3, 0.2, 0.522, 0.7,
+            0.0, 0.0, 0.522, 0.7,
+            0.0, 1.0, 0.522, 0.7,
+        ]; */
+
+            // Billboard vectors
+        let billboard: Vec<f32> = vec! [
+            -0.1, -0.1, 0.0, 
+            0.1, -0.1, 0.0,  
+            0.1,  0.1, 0.0,  
+            -0.1,  0.1, 0.0, 
+        ];
+            // Billboard indices
+        let billboard_indices: Vec<u32> = vec! [
+            0, 1, 2,
+            2, 3, 0
+        ];
+            // Billboard RGBA vectors 
+        let billboard_rgba: Vec<f32> = vec! [
+            0.5, 0.6, 0.5, 0.5,
+            0.5, 0.2, 0.5, 0.5,
+            0.5, 0.9, 0.5, 0.5,
+            0.5, 0.6, 0.5, 0.5,
+        ];
+
+            // Initialize camera x, y and z coordinates
+        let mut cam_x: f32 = 0.0;
+        let mut cam_y: f32 = 0.0;
+        let mut cam_z: f32 = 0.0; 
+
+            // Initialize camera x and y angles
+        let mut cam_angle_x: f32 = 0.0;
+        let mut cam_angle_y: f32 = 0.0;
+
+            // Calls create_vao to create vao with OpenGL
+        let vao = unsafe { 
+            create_vao(&vertices, &indices, &rgba)
+        };
+
+            // Calls create_vao to create billboard vao with OpenGL
+        let billboard_vao = unsafe {
+            create_vao(&billboard, &billboard_indices, &billboard_rgba)
+        };
+
+        
         let simple_shader = unsafe {
             shader::ShaderBuilder::new()
-                .attach_file("./path/to/simple/shader.file")
+                .attach_file("./shaders/simple.frag")
+                .attach_file("./shaders/simple.vert")
                 .link()
+        };  
+
+            // creates vector with z = -2 to reverse left hand-side reversal 
+        let translation: glm::Mat4 = glm::translate(
+            &glm::identity(),
+            &glm::vec3(0.0, 0.0, -2.0),
+        );
+
+            // Creates uniform location string for translation
+        let translation_loc = unsafe {
+            simple_shader.activate();
+            gl::GetUniformLocation(
+                simple_shader.program_id,
+                std::ffi::CString::new("translation").unwrap().as_ptr(),
+            )
         };
-        */
+        
+            // Creates perspective matrix
+        let projection: glm::Mat4 = glm::perspective(
+            window_aspect_ratio,                   
+            (60.0_f32).to_radians(),   
+            0.01,                       
+            100.0,                     
+        );
 
+            // Creates uniform location string for projection
+        let projection_loc = unsafe {
+            simple_shader.activate();
+            gl::GetUniformLocation(
+                simple_shader.program_id,
+                std::ffi::CString::new("projection").unwrap().as_ptr(),
+            )
+        };
+ 
+            // Creates uniform location string for camera
+        let camera_loc = unsafe {
+            simple_shader.activate();
+            gl::GetUniformLocation(
+                simple_shader.program_id,
+                std::ffi::CString::new("camera").unwrap().as_ptr(),
+            )
+        };
 
-        // Used to demonstrate keyboard handling for exercise 2.
-        let mut _arbitrary_number = 0.0; // feel free to remove
-
-
+        
         // The main rendering loop
         let first_frame_time = std::time::Instant::now();
         let mut previous_frame_time = first_frame_time;
@@ -185,14 +360,71 @@ fn main() {
                         // The `VirtualKeyCode` enum is defined here:
                         //    https://docs.rs/winit/0.25.0/winit/event/enum.VirtualKeyCode.html
 
-                        VirtualKeyCode::A => {
-                            _arbitrary_number += delta_time;
+                        // Keyboard inputs for camera movement on the X, Y and Z axis
+
+                            // Y-axis
+                        VirtualKeyCode::W => { 
+                            cam_z = cam_z + delta_time;
+                            println!("camZ: {}", cam_z);
                         }
-                        VirtualKeyCode::D => {
-                            _arbitrary_number -= delta_time;
+                        VirtualKeyCode::S => { 
+                            cam_z = cam_z - delta_time;
+                            println!("camZ: {}", cam_z);
+                        }
+                            // X-axis
+                        VirtualKeyCode::A => { 
+                            cam_x = cam_x + delta_time;
+                            println!("camX: {}", cam_x)
+                        }
+                        VirtualKeyCode::D => { 
+                            cam_x = cam_x - delta_time;
+                            println!("camX: {}", cam_x)
+
+                            // Z-axis
+                        }
+                        VirtualKeyCode::LShift => { 
+                            cam_y = cam_y + delta_time;
+                            println!("camY: {}", cam_y)
+                        }
+                        VirtualKeyCode::Space => {
+                            cam_y = cam_y - delta_time;
+                            println!("camY: {}", cam_y)
                         }
 
+                        // Keyboard inputs for camera rotation on the Y and X axis
 
+                            // Y-axis
+                        VirtualKeyCode::Left => { 
+                            cam_angle_y = cam_angle_y + delta_time;
+                            println!("cam_angle_y: {}", cam_angle_y)
+                        }
+                        VirtualKeyCode::Right => {
+                            cam_angle_y = cam_angle_y - delta_time;
+                            println!("cam_angle_x: {}", cam_angle_y)
+                        }
+
+                            // X-axis
+                        VirtualKeyCode::Up => { 
+                            cam_angle_x = cam_angle_x + delta_time;
+                            println!("cam_angle_x: {}", cam_angle_x)
+                        }
+                        VirtualKeyCode::Down => { 
+                            cam_angle_x = cam_angle_x - delta_time;
+                            println!("cam_angle_x: {}", cam_angle_x)
+                        }
+
+                            // Resets rotation and location 
+                        VirtualKeyCode::R => {
+                            cam_angle_x = 0.0;
+                            cam_angle_y = 0.0;
+                            cam_x = 0.0;
+                            cam_y = 0.0;
+                            cam_z = 0.0;
+                        }
+
+                        
+
+                    
                         // default handler:
                         _ => { }
                     }
@@ -210,17 +442,103 @@ fn main() {
             // == // Please compute camera transforms here (exercise 2 & 3)
 
 
-            unsafe {
-                // Clear the color and depth buffers
-                gl::ClearColor(0.035, 0.046, 0.078, 1.0); // night sky
-                gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+                unsafe {
+
+                    gl::ClearColor(0.035, 0.046, 0.078, 1.0); // night sky
+                    gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+
+                    simple_shader.activate();
+
+                    // Triangles
+
+                        // Creates a new identity matrix and stores it in camera_matrix
+                    let mut camera_matrix: glm::Mat4 = glm::identity(); 
+
+                        // Translates camera movement 
+                    camera_matrix = glm::translate(
+                        &camera_matrix, 
+                        &glm::vec3(cam_x, cam_y, cam_z)
+                    );
+
+                        // Rotates camera movement around the x-plane (pitch)
+                    camera_matrix = glm::rotate(
+                        &camera_matrix,
+                        cam_angle_x,
+                        &glm::vec3(1.0, 0.0, 0.0)
+                    );
+
+                        // Rotates camera movement around the y-plane (yaw)
+                    camera_matrix = glm::rotate(
+                        &camera_matrix, 
+                        cam_angle_y, 
+                        &glm::vec3(0.0, 1.0, 0.0)
+                    );
+
+                        // Send camera matrix uniform to simple.vert                   
+                    gl::UniformMatrix4fv(
+                        camera_loc,
+                        1,                        
+                        gl::FALSE,            
+                        camera_matrix.as_ptr(),    
+                    );
+
+                        // Send translation matrix uniform to simple.vert                
+                     gl::UniformMatrix4fv(
+                        translation_loc,
+                        1,                        
+                        gl::FALSE,            
+                        translation.as_ptr(),    
+                    );
+
+                        // Send projection matrix uniform to simple.vert                
+                    gl::UniformMatrix4fv(
+                        projection_loc,
+                        1,                        
+                        gl::FALSE,            
+                        projection.as_ptr(),    
+                    );
+
+                        // Binds VAO and draws it to scene
+                    gl::BindVertexArray(vao);
+                   
+                    gl::DrawElements(
+                        gl::TRIANGLES,
+                        (indices.len()) as i32,
+                        gl::UNSIGNED_INT,
+                        offset::<u32>(0),
+                    );
+
+                    // Billboard
+
+                        // Creates a copy of camera_matrix 
+                    let mut billboard_camera = camera_matrix;
+
+                        // Writes 1.0 to all rotational matrix components
+                    billboard_camera.set_column(0, &glm::vec4(1.0, 0.0, 0.0, 0.0));
+                    billboard_camera.set_column(1, &glm::vec4(0.0, 1.0, 0.0, 0.0));
+                    billboard_camera.set_column(2, &glm::vec4(0.0, 0.0, 1.0, 0.0));
+
+                        // Send billboards projection matrix uniform to simple.vert
+                    
+                    gl::UniformMatrix4fv(
+                        camera_loc,
+                        1,
+                        gl::FALSE,
+                        billboard_camera.as_ptr()
+                    );
+
+                        // Binds billboard VAO and draws it
+                    gl::BindVertexArray(billboard_vao);
+
+                    gl::DrawElements(
+                        gl::TRIANGLES,
+                        (billboard_indices.len()) as i32,
+                        gl::UNSIGNED_INT,
+                        offset::<u32>(0),
+                    );
+                }
 
 
-                // == // Issue the necessary gl:: commands to draw your scene here
-
-
-
-            }
 
             // Display the new color buffer on the display
             context.swap_buffers().unwrap(); // we use "double buffering" to avoid artifacts
