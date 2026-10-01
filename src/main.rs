@@ -14,6 +14,11 @@ use std::sync::{Mutex, Arc, RwLock};
 
 mod shader;
 mod util;
+mod mesh;
+mod scene_graph;
+mod toolbox;
+use scene_graph::SceneNode;
+use toolbox::Heading;
 
 use glutin::event::{Event, WindowEvent, DeviceEvent, KeyboardInput, ElementState::{Pressed, Released}, VirtualKeyCode::{self, *}};
 use glutin::event_loop::ControlFlow;
@@ -52,54 +57,42 @@ fn offset<T>(n: u32) -> *const c_void {
 // ptr::null()
 
 
-unsafe fn create_vao(vertices: &Vec<f32>, indices: &Vec<u32>, rgba: &Vec<f32>) -> u32 {
+// Uploads a vector of floats to a new VBO and binds it to the given vertex attribute index.
+// `components` is the number of floats per vertex (3 for positions/normals, 4 for RGBA).
+unsafe fn create_attribute_buffer(data: &Vec<f32>, attribute_index: u32, components: i32) {
+    let mut vbo = 0;
+    gl::GenBuffers(1, &mut vbo);
+    gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+    gl::BufferData(
+        gl::ARRAY_BUFFER,
+        byte_size_of_array(data),
+        pointer_to_array(data),
+        gl::STATIC_DRAW,
+    );
+
+    // Describe the layout of the data to OpenGL
+    gl::VertexAttribPointer(
+        attribute_index,
+        components,
+        gl::FLOAT,
+        gl::FALSE,
+        components * size_of::<f32>(),
+        offset::<f32>(0),
+    );
+    gl::EnableVertexAttribArray(attribute_index);
+}
+
+// Creates a Vertex Array Object holding positions (location 0), RGBA colors (location 1),
+// normals (location 2) and an index buffer. Returns the VAO ID.
+unsafe fn create_vao(vertices: &Vec<f32>, indices: &Vec<u32>, rgba: &Vec<f32>, normals: &Vec<f32>) -> u32 {
     // Creates a Vertex Object Array and binds it
     let mut vao = 0;
     gl::GenVertexArrays(1, &mut vao);
     gl::BindVertexArray(vao);
 
-    // Uploads vertex position data to the GPU
-    let mut vbo_pos = 0;
-    gl::GenBuffers(1, &mut vbo_pos);
-    gl::BindBuffer(gl::ARRAY_BUFFER, vbo_pos);
-    gl::BufferData(
-        gl::ARRAY_BUFFER,
-        byte_size_of_array(vertices),
-        pointer_to_array(vertices),
-        gl::STATIC_DRAW,
-    );
-
-    // Describe the layout of the vertex data to OpenGL
-    gl::VertexAttribPointer(
-        0,
-        3,
-        gl::FLOAT,
-        gl::FALSE,
-        3 * size_of::<f32>() as i32,
-        offset::<f32>(0),
-    );
-    gl::EnableVertexAttribArray(0);
-
-    // Uploads vertex RGBA data to the GPU
-    let mut vbo_col = 1;
-    gl::GenBuffers(1, &mut vbo_col);
-    gl::BindBuffer(gl::ARRAY_BUFFER, vbo_col);
-    gl::BufferData(
-        gl::ARRAY_BUFFER,
-        byte_size_of_array(rgba),
-        pointer_to_array(rgba),
-        gl::STATIC_DRAW,
-    );
-
-    gl::VertexAttribPointer(
-        1,
-        4,
-        gl::FLOAT,
-        gl::FALSE,
-        4 * size_of::<f32>() as i32,
-        offset::<f32>(0),
-    );
-    gl::EnableVertexAttribArray(1);
+    create_attribute_buffer(vertices, 0, 3);
+    create_attribute_buffer(rgba, 1, 4);
+    create_attribute_buffer(normals, 2, 3);
 
     // Stored as part of the VAO's state, this tells `glDrawElements` which vertices to connect into triangles, avoiding duplicate vertex data.
     let mut ibo = 0;
@@ -114,6 +107,144 @@ unsafe fn create_vao(vertices: &Vec<f32>, indices: &Vec<u32>, rgba: &Vec<f32>) -
 
     vao
 }
+
+unsafe fn draw_scene(
+    node: &scene_graph::SceneNode,
+    view_projection_matrix: &glm::Mat4,
+    transformation_so_far: &glm::Mat4,
+    mvp_loc: i32,
+    model_loc: i32) 
+    {
+        // Finds relative position of node
+        let relative: glm::Mat4 = 
+            glm::translation(&node.position)
+            * glm::translation(&node.reference_point)
+            * glm::rotation(node.rotation.x, &glm::vec3(1.0,0.0,0.0))
+            * glm::rotation(node.rotation.y, &glm::vec3(0.0, 1.0, 0.0)) 
+            * glm::rotation(node.rotation.z, &glm::vec3(0.0, 0.0, 1.0))
+            * glm::translation(&-node.reference_point);
+
+        let model: glm::Mat4  = transformation_so_far * relative;
+
+        // Logical check to see if the node has any indices to draw
+        if node.index_count > 0 {
+            let mvp: glm::Mat4 = view_projection_matrix * model;
+            gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
+            gl::UniformMatrix4fv(model_loc, 1, gl::FALSE, model.as_ptr());
+            gl::BindVertexArray(node.vao_id);
+            gl::DrawElements(
+                gl::TRIANGLES,
+                node.index_count,
+                gl::UNSIGNED_INT,
+                ptr::null()
+            );
+        }
+
+        // recursivly draws all children nodes
+        for &child in &node.children {
+
+            draw_scene(
+                &*child, 
+                view_projection_matrix, 
+                &model, 
+                mvp_loc, 
+                model_loc
+            );
+    }
+}
+
+// VAO ids and index counts for the helicopter parts, created once and shared by every helicopter
+struct HelicopterVaos {
+    body: (u32, i32),
+    door: (u32, i32),
+    main_rotor: (u32, i32),
+    tail_rotor: (u32, i32),
+}
+
+unsafe fn load_helicopter_vaos() -> HelicopterVaos {
+    let helicopter_mesh = mesh::Helicopter::load("./resources/helicopter.obj");
+
+    let upload = |m: &mesh::Mesh| (create_vao(&m.vertices, &m.indices, &m.colors, &m.normals), m.index_count);
+
+    HelicopterVaos {
+        body: upload(&helicopter_mesh.body),
+        door: upload(&helicopter_mesh.door),
+        main_rotor: upload(&helicopter_mesh.main_rotor),
+        tail_rotor: upload(&helicopter_mesh.tail_rotor),
+    }
+}
+
+// Intialization code for a helicopter
+// Creates nodes for all parts and attaches them hierarchicly 
+
+fn init_helicopter(
+        vaos: &HelicopterVaos,
+        terrain_node: &mut SceneNode)
+            -> (scene_graph::Node, scene_graph::Node, scene_graph::Node, scene_graph::Node)
+        {
+        let mut helicopter_root_node = SceneNode::new();
+        let body_node = SceneNode::from_vao(vaos.body.0, vaos.body.1);
+        let door_node = SceneNode::from_vao(vaos.door.0, vaos.door.1);
+        let mut main_rotor_node = SceneNode::from_vao(vaos.main_rotor.0, vaos.main_rotor.1);
+        let mut tail_rotor_node = SceneNode::from_vao(vaos.tail_rotor.0, vaos.tail_rotor.1);
+
+            // The helicopter parts all move along with the helicopter root
+        helicopter_root_node.add_child(&body_node);
+        helicopter_root_node.add_child(&door_node);
+        helicopter_root_node.add_child(&main_rotor_node);
+        helicopter_root_node.add_child(&tail_rotor_node);
+
+            // The helicopter is placed relative to the terrain, which is placed relative to the root
+        terrain_node.add_child(&helicopter_root_node);
+
+        tail_rotor_node.reference_point = glm::vec3(0.35, 2.3, 10.4);
+        main_rotor_node.reference_point = glm::vec3(0.0, 2.3, 0.0);
+
+        // Return the nodes that need to be accessed (animated / drawn) from the render loop
+        (helicopter_root_node, main_rotor_node, tail_rotor_node, door_node)
+}
+
+// Chase_camera function: Rotates camera towards object node if it moves toward the side of the frustum.
+// Not a very good function
+unsafe fn chase_camera(
+    node: &SceneNode,
+    view_projection_matrix: &glm::Mat4,
+    mut cam_angle_x: f32,
+    mut cam_angle_y: f32
+    ) -> (f32, f32) 
+    {
+        
+        let position = glm::vec4(node.position.x, node.position.y, node.position.z, 1.0);
+        
+        let clip = view_projection_matrix * position ;
+
+        if clip[3] > 0.0 {
+            // In front of the camera: divide by w to get NDC
+            let ndc = clip / clip[3];
+
+            if ndc[0] > 0.7 {
+                cam_angle_y += 0.05;
+            }
+            if ndc[0] < -0.7 {
+                cam_angle_y -= 0.05;
+            }
+            if ndc[1] > 0.7 {
+                cam_angle_x -= 0.05;
+            }
+            
+            if ndc[1] < -0.7 {
+                cam_angle_x += 0.05;
+            }
+        } else {
+            // Behind the camera: dividing by w would flip the signs, so turn using the sign of clip x
+            if clip[0] >= 0.0 {
+                cam_angle_y += 0.05;
+            } else {
+                cam_angle_y -= 0.05;
+            }
+        }
+        (cam_angle_x, cam_angle_y)
+    }
 
 fn main() { 
     // Set up the necessary objects to deal with windows and event handling
@@ -174,164 +305,55 @@ fn main() {
             println!("GLSL\t: {}", util::get_gl_string(gl::SHADING_LANGUAGE_VERSION));
         }
 
-            // Triangle vectors
-        
-        let vertices = vec! [
-            0.6, -0.8, 0.4,
-            0.2, 0.2, 0.4,
-            -0.8, -0.2, 0.4,
-
-            0.4, 0.8, 0.0,
-            -0.1, -0.2, 0.0,
-            0.8, 0.4, 0.0,     
-
-            -0.8, 0.5, -0.2,
-            -0.4, 0.0, -0.2,
-            0.3, 0.1, -0.2
-        ];/*
-
-        let vertices = vec! [
-            0.6, -0.8, 0.0,
-            0.2, 0.0, 0.0,
-            -0.8, -0.2, 0.0,
-
-            0.4, 0.5, 0.0,
-            0.1, 0.2, 0.0,
-            0.8, 0.4, 0.0,     
-
-            -0.8, 0.5, -0.0,
-            -0.4, 0.0, -0.0,
-            0.3, 0.1, -0.0
-        ];*/
-      
-
-            // Triangle indices
-        let indices = vec! [
-            0, 1, 2,
-            3, 4, 5,
-            6, 7, 8,
-
-        ];
-
-            // Triangle RGBA vectors
-        
-        let rgba: Vec<f32> = vec! [
-            1.0, 0.0, 0.9, 0.7,
-            1.0, 0.0, 0.9, 0.7,
-            1.0, 0.0, 0.9, 0.7,
-
-            0.0, 0.252, 1.0, 0.7,
-            0.0, 0.252, 1.0, 0.7,
-            0.0, 0.252, 1.0, 0.7,
-
-            0.0, 1.0, 0.522, 0.7,
-            0.0, 1.0, 0.522, 0.7,
-            0.0, 1.0, 0.522, 0.7,
-        ]; 
-        /* 
-        let rgba: Vec<f32> = vec! [
-            1.0, 0.0, 0.5, 0.7,
-            0.2, 0.0, 0.9, 0.7,
-            1.0, 0.0, 0.2, 0.7,
-
-            0.7, 0.252, 1.0, 0.7,
-            0.4, 0.252, 0.3, 0.7,
-            0.0, 0.252, 0.7, 0.7,
-
-            0.3, 0.2, 0.522, 0.7,
-            0.0, 0.0, 0.522, 0.7,
-            0.0, 1.0, 0.522, 0.7,
-        ]; */
-
-            // Billboard vectors
-        let billboard: Vec<f32> = vec! [
-            -0.1, -0.1, 0.0, 
-            0.1, -0.1, 0.0,  
-            0.1,  0.1, 0.0,  
-            -0.1,  0.1, 0.0, 
-        ];
-            // Billboard indices
-        let billboard_indices: Vec<u32> = vec! [
-            0, 1, 2,
-            2, 3, 0
-        ];
-            // Billboard RGBA vectors 
-        let billboard_rgba: Vec<f32> = vec! [
-            0.5, 0.6, 0.5, 0.5,
-            0.5, 0.2, 0.5, 0.5,
-            0.5, 0.9, 0.5, 0.5,
-            0.5, 0.6, 0.5, 0.5,
-        ];
-
-            // Initialize camera x, y and z coordinates
-        let mut cam_x: f32 = 0.0;
-        let mut cam_y: f32 = 0.0;
-        let mut cam_z: f32 = 0.0; 
-
-            // Initialize camera x and y angles
-        let mut cam_angle_x: f32 = 0.0;
-        let mut cam_angle_y: f32 = 0.0;
-
-            // Calls create_vao to create vao with OpenGL
-        let vao = unsafe { 
-            create_vao(&vertices, &indices, &rgba)
+            // Load the lunar terrain and upload it to the GPU
+        let terrain_mesh = mesh::Terrain::load("./resources/lunarsurface.obj");
+        let terrain_vao = unsafe {
+            create_vao(&terrain_mesh.vertices, &terrain_mesh.indices, &terrain_mesh.colors, &terrain_mesh.normals)
         };
 
-            // Calls create_vao to create billboard vao with OpenGL
-        let billboard_vao = unsafe {
-            create_vao(&billboard, &billboard_indices, &billboard_rgba)
+        let mut root_node = SceneNode::new();
+        let mut terrain_node = SceneNode::from_vao(terrain_vao, terrain_mesh.index_count);
+        root_node.add_child(&terrain_node);
+
+
+            // Load the helicopter mesh and upload it to the GPU once; all helicopters share these VAOs
+        let helicopter_vaos = unsafe { 
+            load_helicopter_vaos() 
         };
 
+        let mut helicopters: Vec<_> = (0..5)
+            .map(|_| init_helicopter(&helicopter_vaos, &mut terrain_node))
+            .collect();
+
+            // Door state: U toggles open/closed, door_offset animates smoothly towards the target
+        let mut door_open = false;
+        let mut u_was_pressed = false;
+        let mut door_offset: f32 = 0.0;
         
+
         let simple_shader = unsafe {
             shader::ShaderBuilder::new()
                 .attach_file("./shaders/simple.frag")
                 .attach_file("./shaders/simple.vert")
                 .link()
-        };  
-
-            // creates vector with z = -2 to reverse left hand-side reversal 
-        let translation: glm::Mat4 = glm::translate(
-            &glm::identity(),
-            &glm::vec3(0.0, 0.0, -2.0),
-        );
-
-            // Creates uniform location string for translation
-        let translation_loc = unsafe {
-            simple_shader.activate();
-            gl::GetUniformLocation(
-                simple_shader.program_id,
-                std::ffi::CString::new("translation").unwrap().as_ptr(),
-            )
-        };
-        
-            // Creates perspective matrix
-        let projection: glm::Mat4 = glm::perspective(
-            window_aspect_ratio,                   
-            (60.0_f32).to_radians(),   
-            0.01,                       
-            100.0,                     
-        );
-
-            // Creates uniform location string for projection
-        let projection_loc = unsafe {
-            simple_shader.activate();
-            gl::GetUniformLocation(
-                simple_shader.program_id,
-                std::ffi::CString::new("projection").unwrap().as_ptr(),
-            )
-        };
- 
-            // Creates uniform location string for camera
-        let camera_loc = unsafe {
-            simple_shader.activate();
-            gl::GetUniformLocation(
-                simple_shader.program_id,
-                std::ffi::CString::new("camera").unwrap().as_ptr(),
-            )
         };
 
-        
+            // Location of the combined transformation matrix in simple.vert
+        let mvp_loc = unsafe { simple_shader.get_uniform_location("mvp") };
+        let model_loc = unsafe { simple_shader.get_uniform_location("model") };
+
+
+            // Camera state: position in world space, and rotation around the X (pitch) and Y (yaw) axes.
+            // Starts slightly above the terrain so the craters are visible.
+        let initial_cam_position = glm::vec3(0.0, 40.0, 0.0);
+        let mut cam_position = initial_cam_position;
+        let mut cam_angle_x: f32 = 0.3; // pitch, positive looks down
+        let mut cam_angle_y: f32 = 0.0; // yaw
+
+            // Units per second the camera moves, and radians per second it turns
+        let cam_speed: f32 = 30.0;
+        let cam_turn_speed: f32 = 1.2;
+
         // The main rendering loop
         let first_frame_time = std::time::Instant::now();
         let mut previous_frame_time = first_frame_time;
@@ -353,78 +375,48 @@ fn main() {
                 }
             }
 
+                // Unit vectors pointing forwards and to the right of the camera in the XZ-plane,
+                // so that W/A/S/D moves relative to the direction the camera is facing.
+            let forward = glm::vec3(cam_angle_y.sin(), 0.0, -cam_angle_y.cos());
+            let right = glm::vec3(cam_angle_y.cos(), 0.0, cam_angle_y.sin());
+            let up = glm::vec3(0.0, 1.0, 0.0);
+            let step = cam_speed * delta_time;
+
             // Handle keyboard input
             if let Ok(keys) = pressed_keys.lock() {
+                    // Toggle the door only on the frame U goes down, not every frame it is held
+                let u_pressed = keys.contains(&VirtualKeyCode::U);
+                if u_pressed && !u_was_pressed {
+                    door_open = !door_open;
+                }
+                u_was_pressed = u_pressed;
+
                 for key in keys.iter() {
                     match key {
                         // The `VirtualKeyCode` enum is defined here:
                         //    https://docs.rs/winit/0.25.0/winit/event/enum.VirtualKeyCode.html
 
-                        // Keyboard inputs for camera movement on the X, Y and Z axis
+                        // Camera movement
+                        VirtualKeyCode::W      => { cam_position += forward * step; }
+                        VirtualKeyCode::S      => { cam_position -= forward * step; }
+                        VirtualKeyCode::D      => { cam_position += right * step; }
+                        VirtualKeyCode::A      => { cam_position -= right * step; }
+                        VirtualKeyCode::Space  => { cam_position += up * step; }
+                        VirtualKeyCode::LShift => { cam_position -= up * step; }
 
-                            // Y-axis
-                        VirtualKeyCode::W => { 
-                            cam_z = cam_z + delta_time;
-                            println!("camZ: {}", cam_z);
-                        }
-                        VirtualKeyCode::S => { 
-                            cam_z = cam_z - delta_time;
-                            println!("camZ: {}", cam_z);
-                        }
-                            // X-axis
-                        VirtualKeyCode::A => { 
-                            cam_x = cam_x + delta_time;
-                            println!("camX: {}", cam_x)
-                        }
-                        VirtualKeyCode::D => { 
-                            cam_x = cam_x - delta_time;
-                            println!("camX: {}", cam_x)
+                        // Camera rotation
+                        VirtualKeyCode::Left  => { cam_angle_y -= cam_turn_speed * delta_time; }
+                        VirtualKeyCode::Right => { cam_angle_y += cam_turn_speed * delta_time; }
+                        VirtualKeyCode::Up    => { cam_angle_x -= cam_turn_speed * delta_time; }
+                        VirtualKeyCode::Down  => { cam_angle_x += cam_turn_speed * delta_time; }
 
-                            // Z-axis
-                        }
-                        VirtualKeyCode::LShift => { 
-                            cam_y = cam_y + delta_time;
-                            println!("camY: {}", cam_y)
-                        }
-                        VirtualKeyCode::Space => {
-                            cam_y = cam_y - delta_time;
-                            println!("camY: {}", cam_y)
-                        }
-
-                        // Keyboard inputs for camera rotation on the Y and X axis
-
-                            // Y-axis
-                        VirtualKeyCode::Left => { 
-                            cam_angle_y = cam_angle_y + delta_time;
-                            println!("cam_angle_y: {}", cam_angle_y)
-                        }
-                        VirtualKeyCode::Right => {
-                            cam_angle_y = cam_angle_y - delta_time;
-                            println!("cam_angle_x: {}", cam_angle_y)
-                        }
-
-                            // X-axis
-                        VirtualKeyCode::Up => { 
-                            cam_angle_x = cam_angle_x + delta_time;
-                            println!("cam_angle_x: {}", cam_angle_x)
-                        }
-                        VirtualKeyCode::Down => { 
-                            cam_angle_x = cam_angle_x - delta_time;
-                            println!("cam_angle_x: {}", cam_angle_x)
-                        }
-
-                            // Resets rotation and location 
+                        // Resets rotation and location
                         VirtualKeyCode::R => {
-                            cam_angle_x = 0.0;
+                            cam_position = initial_cam_position;
+                            cam_angle_x = 0.3;
                             cam_angle_y = 0.0;
-                            cam_x = 0.0;
-                            cam_y = 0.0;
-                            cam_z = 0.0;
                         }
 
-                        
-
-                    
                         // default handler:
                         _ => { }
                     }
@@ -439,106 +431,65 @@ fn main() {
                 *delta = (0.0, 0.0); // reset when done
             }
 
-            // == // Please compute camera transforms here (exercise 2 & 3)
+                // Projection matrix, recomputed each frame so it follows the window's aspect ratio.
+            let projection: glm::Mat4 = glm::perspective(
+                window_aspect_ratio,
+                (60.0_f32).to_radians(),
+                1.0,
+                1000.0,
+            );
+            
+
+                // View matrix: first move the world so the camera is at the origin,
+                // then rotate it around the camera (yaw first, then pitch).
+            let view: glm::Mat4 =
+                glm::rotation(cam_angle_x, &glm::vec3(1.0, 0.0, 0.0))
+                * glm::rotation(cam_angle_y, &glm::vec3(0.0, 1.0, 0.0))
+                * glm::translation(&-cam_position);
+
+            let view_projection = projection * view;
+
+                // Slide the door backwards along the body (+z) when open
+            let door_target = 
+                if door_open { 
+                    2.0 
+                } else { 
+                    0.0 
+                };
+            let door_speed = 3.0 * delta_time;
+            door_offset += (door_target - door_offset).clamp(-door_speed, door_speed);
+
+            for (i, (heli_root, main_rotor, tail_rotor, door)) in helicopters.iter_mut().enumerate() {
+                door.position.z = door_offset;
+                let t = elapsed + i as f32 * 0.8; // tidsforskyvning så de ikke overlapper
+                main_rotor.rotation.y = t * 10.0;
+                tail_rotor.rotation.x = t * 10.0;
+
+                let heading = toolbox::simple_heading_animation(t);
+                heli_root.position = glm::vec3(heading.x, 20.0 + 5.0 * (i as f32* 0.7).sin(), heading.z);
+                heli_root.rotation = glm::vec3(heading.pitch, heading.yaw, heading.roll);
+            }
+
+            let cam_angle_adjust = unsafe { 
+                chase_camera(&helicopters[0].0, &view_projection, cam_angle_x, cam_angle_y) 
+            };
+
+            cam_angle_x = cam_angle_adjust.0;
+            cam_angle_y = cam_angle_adjust.1;
+
+            
 
 
-                unsafe {
+            unsafe {
+                gl::ClearColor(0.035, 0.046, 0.078, 1.0); // night sky
+                gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
 
-                    gl::ClearColor(0.035, 0.046, 0.078, 1.0); // night sky
-                    gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT);
+                simple_shader.activate();
 
-                    simple_shader.activate();
-
-                    // Triangles
-
-                        // Creates a new identity matrix and stores it in camera_matrix
-                    let mut camera_matrix: glm::Mat4 = glm::identity(); 
-
-                        // Translates camera movement 
-                    camera_matrix = glm::translate(
-                        &camera_matrix, 
-                        &glm::vec3(cam_x, cam_y, cam_z)
-                    );
-
-                        // Rotates camera movement around the x-plane (pitch)
-                    camera_matrix = glm::rotate(
-                        &camera_matrix,
-                        cam_angle_x,
-                        &glm::vec3(1.0, 0.0, 0.0)
-                    );
-
-                        // Rotates camera movement around the y-plane (yaw)
-                    camera_matrix = glm::rotate(
-                        &camera_matrix, 
-                        cam_angle_y, 
-                        &glm::vec3(0.0, 1.0, 0.0)
-                    );
-
-                        // Send camera matrix uniform to simple.vert                   
-                    gl::UniformMatrix4fv(
-                        camera_loc,
-                        1,                        
-                        gl::FALSE,            
-                        camera_matrix.as_ptr(),    
-                    );
-
-                        // Send translation matrix uniform to simple.vert                
-                     gl::UniformMatrix4fv(
-                        translation_loc,
-                        1,                        
-                        gl::FALSE,            
-                        translation.as_ptr(),    
-                    );
-
-                        // Send projection matrix uniform to simple.vert                
-                    gl::UniformMatrix4fv(
-                        projection_loc,
-                        1,                        
-                        gl::FALSE,            
-                        projection.as_ptr(),    
-                    );
-
-                        // Binds VAO and draws it to scene
-                    gl::BindVertexArray(vao);
-                   
-                    gl::DrawElements(
-                        gl::TRIANGLES,
-                        (indices.len()) as i32,
-                        gl::UNSIGNED_INT,
-                        offset::<u32>(0),
-                    );
-
-                    // Billboard
-
-                        // Creates a copy of camera_matrix 
-                    let mut billboard_camera = camera_matrix;
-
-                        // Writes 1.0 to all rotational matrix components
-                    billboard_camera.set_column(0, &glm::vec4(1.0, 0.0, 0.0, 0.0));
-                    billboard_camera.set_column(1, &glm::vec4(0.0, 1.0, 0.0, 0.0));
-                    billboard_camera.set_column(2, &glm::vec4(0.0, 0.0, 1.0, 0.0));
-
-                        // Send billboards projection matrix uniform to simple.vert
-                    
-                    gl::UniformMatrix4fv(
-                        camera_loc,
-                        1,
-                        gl::FALSE,
-                        billboard_camera.as_ptr()
-                    );
-
-                        // Binds billboard VAO and draws it
-                    gl::BindVertexArray(billboard_vao);
-
-                    gl::DrawElements(
-                        gl::TRIANGLES,
-                        (billboard_indices.len()) as i32,
-                        gl::UNSIGNED_INT,
-                        offset::<u32>(0),
-                    );
-                }
-
-
+                // Call recursive draw_sccene function to draw from root node
+                draw_scene(&root_node, &view_projection, &glm::identity(), mvp_loc, model_loc);
+            }
+                
 
             // Display the new color buffer on the display
             context.swap_buffers().unwrap(); // we use "double buffering" to avoid artifacts
